@@ -309,6 +309,7 @@ slim <- function(model, sequence_length, recombination_rate,
                  sampling = NULL, max_attempts = 1,
                  save_locations = FALSE,
                  method = c("batch", "gui"), verbose = FALSE, burnin = 0,
+                 retainall = FALSE,
                  random_seed = NULL, slim_path = NULL, save_sampling = TRUE) {
   model_dir <- model$path
   if (!dir.exists(model_dir))
@@ -342,6 +343,7 @@ slim <- function(model, sequence_length, recombination_rate,
   call. = FALSE)
 
   seed <- if (is.null(random_seed)) "" else paste0(" \\\n    -d SEED=", random_seed)
+  rt <- if (is.null(retainall)) "" else paste0(" \\\n    -d RETAINALL=", ifelse(retainall==TRUE,"T","F"))
   samples <- if (is.null(sampling_path)) ""
              else paste0(" \\\n    -d 'SAMPLES=\"", sampling_path, "\"'")
 
@@ -361,6 +363,7 @@ slim <- function(model, sequence_length, recombination_rate,
     -d SPATIAL=%s \\
     -d SEQUENCE_LENGTH=%i \\
     -d RECOMB_RATE=%s \\
+    %s \\
     -d BURNIN_LENGTH=%s \\
     -d SIMULATION_LENGTH=%s \\
     -d SAVE_LOCATIONS=%s \\
@@ -374,6 +377,7 @@ slim <- function(model, sequence_length, recombination_rate,
       spatial,
       sequence_length,
       recombination_rate,
+      rt,
       burnin,
       model$length,
       save_locations,

@@ -19,6 +19,7 @@ initialize() {
     optional_arg("OUTPUT", config_path("output")); // shared path of output files
     optional_arg("SAMPLES", ""); // path to a table with the sampling schedule
     optional_arg("SPATIAL", fileExists(config_path("maps.tsv"))); // is the model spatial?
+    optional_arg("RETAINALL", ""); // retain all ancestors in a tree?
     optional_arg("SAVE_LOCATIONS", F); // record locations of all individuals?
     optional_arg("BURNIN_LENGTH", 0); // length of the burnin period in generations
     optional_arg("SIMULATION_LENGTH", // total length of the simulation in generations
@@ -65,9 +66,11 @@ initialize() {
 
     defineConstant("SIMULATION_START", BURNIN_LENGTH + min(POPULATIONS.getValue("tsplit_gen")));
     defineConstant("SIMULATION_END", SIMULATION_START + SIMULATION_LENGTH);
-
-    initializeTreeSeq(retainCoalescentOnly = T);
-
+    if (RETAINALL=="T"){
+        initializeTreeSeq(retainCoalescentOnly = F);
+    }
+    else
+        initializeTreeSeq(retainCoalescentOnly = T);
     initializeMutationType("m0", 0.5, "f", 0.0);
     initializeGenomicElementType("g1", m0, 1.0);
     initializeGenomicElement(g1, 0, SEQUENCE_LENGTH - 1);
@@ -591,16 +594,21 @@ function (f) dispersal_fun(s$ fun, f$ param) {
         distance = rcauchy(1, location = 0, scale = param);
     else if (fun == "exponential")
         distance = rexp(1, mu = param);
+    else if (fun == "brownian")
+        distance = 0;
     else
         stop("Invalid dispersal function '" + fun + "' specified");
-
     // draw an angle from a uniform distribution of angles around a circle
     angle = runif(1, min = 0, max = 2 * PI);
-
     // convert the polar coordinate <angle, distance> into cartesian system
-    x = distance * cos(angle);
-    y = distance * sin(angle);
-
+    if (fun=="brownian"){
+        x = rnorm(1, mean = 0, sd = param);
+        y = rnorm(1, mean = 0, sd = param);
+    }
+    else {
+        x = distance * cos(angle);
+        y = distance * sin(angle);
+    }
     return(c(x, y));
 }
 
@@ -642,6 +650,7 @@ function (object<Dictionary>) collect_metadata(void) {
     metadata.setValue("arguments", Dictionary(
         "SEQUENCE_LENGTH", SEQUENCE_LENGTH,
         "RECOMB_RATE", RECOMB_RATE,
+        "RETAINALL", RETAINALL,
         "SEED", SEED,
         "BURNIN_LENGTH", BURNIN_LENGTH,
         "SIMULATION_LENGTH", SIMULATION_LENGTH,
@@ -759,7 +768,7 @@ function (ifsl) convert_type(s$ column_name, s string_values) {
     // vectors of all possible column names in tables defined by slendr `compile()`
     string = c("pop", "parent", "how", "path", "from", "to", "how", "dispersal_fun");
     integer = c("pop_id", "parent_id", "from_id", "to_id", "N", "prev_N",
-                "time_orig", "time_gen", 
+                "time_orig", "time_gen",
                 "tsplit_orig", "tsplit_gen", "tdispersal_orig", "tdispersal_gen",
                 "tremove_orig", "tremove_gen", "tstart_orig", "tstart_gen",
                 "tend_orig", "tend_gen", "tresize_orig", "tresize_gen");
