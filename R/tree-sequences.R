@@ -1857,3 +1857,59 @@ define_windows <- function(ts, breakpoints) {
 concat <- function(x) {
   paste(x, collapse = "+")
 }
+
+
+ts_connect <- function(ts){
+  nds <- ts %>% ts_nodes()
+  edg <- ts %>% ts_edges() %>% rename("edge_id"="id")
+  dat <- ts %>% ts_data()
+  # extract data
+  dat <- dat %>%
+    rowwise() %>%
+    mutate(x=unlist(location)[1],
+           y=unlist(location)[2]) %>%
+    ungroup()
+  parent_nodes <- dat %>%
+    dplyr::as_tibble() %>%
+    dplyr::filter(node_id %in% edg$parent) %>%
+    dplyr::select(parent_pop = pop,
+                  parent_ind_id = ind_id,
+                  parent_node_id = node_id,
+                  parent_time = time, parent_location = location) %>%
+    dplyr::left_join(edg, by = c("parent_node_id" = "parent")) %>%
+    dplyr::arrange(parent_node_id)
+  # next we get all the nodes which are children
+  branch_nodes <- dat %>%
+    dplyr::as_tibble() %>%
+    dplyr::filter(node_id %in% edg$child) %>%
+    dplyr::select(child_pop  = pop,
+                  child_ind_id = ind_id,
+                  child_node_id = node_id,
+                  child_time = time, child_location = location) %>%
+    dplyr::inner_join(parent_nodes, by = c("child_node_id" = "child")) %>%
+    # and smash the two dataframes together
+    dplyr::arrange(child_node_id)
+  # get all the lines connecting the parent and child locations
+  connections <- branch_nodes %>%
+    rowwise() %>%
+    mutate(pts=st_union(child_location,parent_location)) %>%
+    mutate(connection=st_cast(pts,"LINESTRING")) %>% ungroup()
+  # let the branches hold the line information
+  branches <- connections %>%
+    sf::st_set_geometry("connection")
+  # let the connections hold the point position of the individuals
+  connections <- connections %>% rowwise() %>%
+    mutate(edge_gens=child_time-parent_time,
+           # calculate the x and y displacements
+           disp=st_length(connection),
+           x_disp=unlist(child_location)[1]-unlist(parent_location)[1],
+           y_disp=unlist(child_location)[2]-unlist(parent_location)[2],
+           # and scale everything by generations
+           disp_pergen=disp/edge_gens,
+           x_disp_pergen=x_disp/edge_gens,
+           y_disp_pergen=y_disp/edge_gens) %>%
+    ungroup() %>%
+    sf::st_set_geometry("child_location")
+  return(list(connections, branches))
+}
+
