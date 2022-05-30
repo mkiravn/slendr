@@ -1859,10 +1859,13 @@ concat <- function(x) {
 }
 
 
-ts_connect <- function(ts){
+ts_connect <- function(ts,i=1,simplified=F){
   nds <- ts %>% ts_nodes()
   edg <- ts %>% ts_edges() %>% rename("edge_id"="id")
-  dat <- ts %>% ts_data()
+  if (simplified==T){
+    dat <- ts %>% ts_phylo(i=i) %>% ts_data}else{
+    dat <- ts %>% ts_data
+    }
   # extract data
   dat <- dat %>%
     rowwise() %>%
@@ -1875,7 +1878,7 @@ ts_connect <- function(ts){
     dplyr::select(parent_pop = pop,
                   parent_ind_id = ind_id,
                   parent_node_id = node_id,
-                  parent_time = time, parent_location = location) %>%
+                  parent_time = time, parent_location = location) %>% filter(st_is_empty(parent_location)==FALSE) %>%
     dplyr::left_join(edg, by = c("parent_node_id" = "parent")) %>%
     dplyr::arrange(parent_node_id)
   # next we get all the nodes which are children
@@ -1901,15 +1904,138 @@ ts_connect <- function(ts){
   connections <- connections %>% rowwise() %>%
     mutate(edge_gens=child_time-parent_time,
            # calculate the x and y displacements
-           disp=st_length(connection),
-           x_disp=unlist(child_location)[1]-unlist(parent_location)[1],
-           y_disp=unlist(child_location)[2]-unlist(parent_location)[2],
-           # and scale everything by generations
-           disp_pergen=disp/edge_gens,
-           x_disp_pergen=x_disp/edge_gens,
-           y_disp_pergen=y_disp/edge_gens) %>%
+           dist=st_length(connection),
+           x_dist=unlist(child_location)[1]-unlist(parent_location)[1],
+           y_dist=unlist(child_location)[2]-unlist(parent_location)[2]) %>%
     ungroup() %>%
     sf::st_set_geometry("child_location")
   return(list(connections, branches))
 }
+
+
+collect_descendants <- function(x, edges) {
+  # list for collecting paths (i.e. sets of edges) leading from the focal node
+  # to the root
+  result <- list()
+
+  # initialize the counter of nodes already processed by the queue
+  n_nodes <- length(unique(c(edges$child, edges$parent)))
+  processed_nodes <- vector(length = n_nodes + 1)
+
+  # initialize the queue with all edges leading from the focal ancestor
+  edge <- edges[edges$parent == x, ] #%>% dplyr::mutate(level = 1)
+  queue <- split(edge, edge$child)
+
+  # repeat until the queue is empty (this homebrew queue implementation is
+  # probably horribly inefficient but it will do for now)
+  i <- 0
+  while (TRUE) {
+    cat("queue ", (i <- i + 1), "\n")
+    # pop out the first element
+    item <- queue[[1]]; queue[[1]] <- NULL
+
+    # add it to the final list
+    result[[length(result) + 1]] <- item
+
+    for (child in split(item, item$child)) {
+      # browser()
+      #cat("queue ", i, " parent ", (p <- i + 1), "\n")
+      # get edges leading from the current child to its own children
+      edge <- edges[edges$parent == child$child, ]
+
+      # if the child has no children itself or its node has already been
+      # processed, skip it and don't add it to the queue
+      already_processed <- processed_nodes[unique(edge$child) + 1]
+      edge <- edge[!already_processed, ]
+      if (nrow(edge) == 0) next
+
+      # mark the node as processed...
+      processed_nodes[unique(edge$child) + 1] <- TRUE
+      # ... and add it to the queue
+      # edge$level <- item$level[1] + 1
+      queue[[length(queue) + 1]] <- edge
+    }
+
+    if (length(queue) == 0) break
+  }
+
+  result <- dplyr::bind_rows(result) %>%
+    dplyr::select(child_id = child, parent_id = parent, left, right) #, level)
+
+  result
+}
+
+
+ts_descendants <- function(ts, x = NULL, verbose = FALSE) {
+  check_ts_class(ts)
+
+  model <- attr(ts, "model")
+
+  if (is.null(model$world))
+    stop("Cannot process locations of ancestral nodes for non-spatial tree sequence data",
+         call. = FALSE)
+
+  edges <- ts_edges(ts)
+
+  data <- ts_data(ts) %>% dplyr::filter(!is.na(ind_id))
+
+  if (is.null(x))
+    x <- unique(ts_data(ts)$name)
+  else if (is.character(x) && !all(x %in% data$name))
+    stop("The following individuals are not present in the tree sequence: ",
+         paste0(x[!x %in% data$name], collapse = ", "),
+         call. = FALSE)
+
+  # collect child-parent branches starting from the "focal nodes"
+  branches <- purrr::map_dfr(x, function(.x) {
+    if (verbose) message(sprintf("Collecting descendants of %s [%d/%d]...",
+                                 .x, which(.x == x), length(x)))
+    ids <- get_node_ids(ts, .x)
+    purrr::map_dfr(ids, function(.y) collect_descendants(.y, edges) %>%
+                     dplyr::mutate(name = ifelse(is.character(.x), .x, NA),
+                                   pop = dplyr::filter(data, node_id == .y)$pop[1],
+                                   node_id = .y))
+  })
+
+  child_data  <- dplyr::select(data, child_pop  = pop, child_id  = node_id, child_time  = time, child_location = location)
+  parent_data <- dplyr::select(data, parent_pop = pop, parent_id = node_id, parent_time = time, parent_location = location)
+  #  ind_data <- dplyr::as_tibble(data) %>% dplyr::select(focal_name = name, focal_pop = pop, focal_ind_id = ind_id)%>% dplyr::distinct()
+
+  combined <- branches %>%
+    dplyr::inner_join(child_data, by = "child_id") %>%
+    dplyr::inner_join(parent_data, by = "parent_id") %>%
+    #    dplyr::inner_join(ind_data, by = c("ind_id" = "focal_ind_id")) %>%
+    sf::st_as_sf()
+
+  if (verbose) message("\nGenerating data about spatial relationships of nodes...")
+
+  connections <- purrr::map2(
+    combined$child_location, combined$parent_location, ~
+      sf::st_union(.x, .y) %>%
+      sf::st_cast("LINESTRING") %>%
+      sf::st_sfc() %>%
+      sf::st_sf(connection = ., crs = sf::st_crs(combined))) %>%
+    dplyr::bind_rows()
+
+  # order population names by their split time
+  pop_names <- order_pops(model$populations, model$direction)
+
+  final <- dplyr::bind_cols(combined, connections) %>%
+    sf::st_set_geometry("connection") %>%
+    dplyr::select(name, pop, node_id, #level,
+                  child_id, child_time, parent_id, parent_time,
+                  child_pop, parent_pop,
+                  child_location, parent_location, connection,
+                  left_pos = left, right_pos = right) %>%
+    dplyr::mutate(#level = as.factor(level),
+      pop = factor(pop, levels = pop_names),
+      child_pop = factor(child_pop, levels = pop_names),
+      parent_pop = factor(parent_pop, levels = pop_names))
+
+  attr(final, "model") <- model
+
+  final
+}
+
+
 
